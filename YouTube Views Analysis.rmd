@@ -1,0 +1,756 @@
+---
+title: "YouTube Views Analysis"
+author: "Matt Eisenbrei"
+date: "9/6/2019"
+output: html_document
+
+# Data set: Trending YouTube Video Statistics
+# Data source: https://www.kaggle.com/datasnaek/youtube-new
+
+# **Goals**
+# **Primary:** Predict youtube video views based on key variables. Use the resulting model to predict hypothetical views for a video.
+# **Secondary 1:** Carefully assess the model's variables, dropping less useful variables and adding new variables which can help to tell a good story.
+# **Secondary 2:** Identify a "best" model using stepwise selection and cross-validation.
+
+# **PART 1: INITIAL DATA ASSESSMENT**
+
+## Import the US data set.
+```{r}
+setwd("E:/Matt/UCLA Data Science Intensive/Capstone")
+us.data=read.csv("USVideos.csv")
+```
+
+## Review the structure to check for missing or NA values.
+```{r}
+str(us.data)
+summary(us.data)
+sapply(us.data,function(x)sum(is.na(x)))
+```
+
+## Fortunately, none were found in the fields we plan to keep. We can keep most of the 40K+ observations.
+## Overall, we have a fairly "skinny" data set (many observations, comparatively fewer variables) so a linear model may be a good fit.
+
+# **PART 1A: Add explanatory variables to conduct more insightful analyses.**
+
+## First we load the package required to read JSON files so we can label content by genre for analysis.
+```{r}
+library("rjson")
+US.category.names=fromJSON(file="US_category_id.json")
+US_categories=as.data.frame(US.category.names)
+str(US_categories)
+```
+
+## Then we review the data from the .json file and extract the category_id and genre data.
+```{r}
+col.list1=US_categories[,grep("items.snippet.title",colnames(US_categories))]
+col.list1
+
+col.list2=US_categories[,grep("items.id",colnames(US_categories))]
+col.list2
+```
+## Next, we export the .json file data frames, combine them in Excel as "key.csv", then import "key.csv" and make it a data frame.
+```{r}
+write.csv(col.list1,"E:/Matt/UCLA Data Science Intensive/Capstone/list1.csv", row.names = FALSE)
+write.csv(col.list2,"E:/Matt/UCLA Data Science Intensive/Capstone/list2.csv", row.names = FALSE)
+
+categories.us=read.csv(file="E:/Matt/UCLA Data Science Intensive/Capstone/key.csv",header=T, sep=",")
+cat.us=as.data.frame(categories.us)
+summary(cat.us)
+```
+## Following those steps, we add the genre data to the qualitative data set.
+```{r}
+us.data=merge(us.data,cat.us,by="category_id")
+```
+## Now we will look at time series and text variables.
+
+## First we add new day of week variables for exploration.
+
+## We look at trending_data and add a new variable to note day of the week for trending, "trending_weekday".
+```{r}
+us.data$trending_date=as.Date(us.data$trending_date,"%Y.%d.%m")
+us.data$trending_weekday=weekdays(us.data$trending_date)
+us.data$trending_weekday=as.factor(us.data$trending_weekday)
+```
+
+## Then we break the "publish_time" variable into two new variables, "publish_date" and "publish_date_weekly".
+```{r}
+us.data$publish_date=substr(us.data$publish_time,1,10)
+us.data$publish_date=as.Date(us.data$publish_date,"%Y-%m-%d")
+us.data$publish_date_weekday=weekdays(us.data$publish_date)
+us.data$publish_date_weekday=as.factor(us.data$publish_date_weekday)
+```
+
+## Next we look at sentiment analysis to assess whether any text sentiment can help to explain the dependent variable (views).
+
+## First we load the key libraries.
+```{r}
+library(sentimentr)
+library(stringr)
+library(tidyverse)
+library(tidytext)
+library(tm)
+library(gmodels)
+```
+## Then we change some of the text fields to character format before creating new variables.
+
+## We start with video title sentiment.
+```{r}
+us.data$title=as.character(us.data$title)
+title.sent=get_sentences(us.data$title)
+df1=sentiment_by(title.sent)
+us.data$title.sentiment=df1$ave_sentiment
+```
+
+## Then we add channel title sentiment.
+```{r}
+us.data$channel_title=as.character(us.data$channel_title)
+channel_title.sent=get_sentences(us.data$channel_title)
+df2=sentiment_by(channel_title.sent)
+us.data$channel_title.sentiment=df2$ave_sentiment
+```
+
+## Next, we include tags.
+```{r}
+us.data$tags=as.character(us.data$tags)
+tags.sent=get_sentences(us.data$tags)
+df3=sentiment_by(tags.sent)
+us.data$tags.sentiment=df3$ave_sentiment
+```
+
+## Finally, we add description.
+```{r}
+us.data$description=as.character(us.data$description)
+description.sent=get_sentences(us.data$description)
+df4=sentiment_by(description.sent)
+us.data$description.sentiment=df4$ave_sentiment
+str(us.data)
+```
+
+## Now we will investigate how many videos had comments disabled. These videos will not be useful for us if comment_count is a variable with high explanatory power.
+```{r}
+sum(us.data$comments_disabled==TRUE)
+```
+
+## Only 633 observations out of ~41K had comments disabled. We will remove these observations.
+
+## We next investigate how many videos were removed due to errors or technical issues.
+```{r}
+sum(us.data$video_error_or_removed==TRUE)
+```
+
+## There were only 23 videos with confirmed technical issues. These observations will also be removed so that we can analyze videos which did not have technical issues which would prevent views.
+
+# **PART 1B: Begin some Exploratory Data Analysis (EDA)**
+
+## How many videos are there by genre?
+```{r}
+library(ggplot2)
+ggplot(us.data) +
+  geom_bar(aes(genre,fill=genre)) +
+  labs(y="Count of Videos",title ="Count of Videos by Genre")+ theme(axis.text=element_text(size=6),legend.position = "none")
+```
+
+## In the US, the Entertainment genre appears to have the highest number of available videos.
+
+## Which genres have the most views on a log scale?
+```{r}
+ggplot(us.data,aes(x=genre,y=log(views))) + geom_bar(aes(fill=genre),stat="identity") + 
+  labs(y="Log Views",title ="Count of Log Video Views by Genre")+ theme(axis.text=element_text(size=6),legend.position = "none")
+```
+
+## Again, it's the Entertainment genre. More videos = more chances for views.
+
+## Which genres have the most likes on a log scale?
+```{r}
+ggplot(us.data,aes(x=genre,y=log(likes))) + geom_bar(aes(fill=genre),stat="identity") + 
+  labs(y="Log Likes",title ="Count of Log Video Likes by Genre")+ theme(axis.text=element_text(size=6),legend.position = "none")
+```
+
+## Variations on a theme. We will need to consider plots that account for the raw number of videos posted by genre, especially for Entertainment.
+
+## Which genres have the most average likes per view?
+```{r}
+ggplot(us.data,aes(x=genre,y=likes/views)) + geom_bar(aes(fill=genre),stat="identity") + 
+  labs(y="Likes/Views",title ="Average Likes per View by Genre")+ theme(axis.text=element_text(size=6),legend.position = "none")
+```
+
+## This is more interesting, as Music genre videos actually have higher likes per view than Entertainment. After Entertainment, How-to & Style has the next most likes per view.
+
+## Let's look at dislikes by genre on a log scale.
+```{r}
+ggplot(us.data,aes(x=genre,y=log(dislikes))) + geom_bar(aes(fill=genre),stat="identity") + 
+  labs(y="Log Dislikes",title ="Count of Log Video Dislikes by Genre")+ theme(axis.text=element_text(size=6),legend.position = "none")
+```
+
+## Entertainment videos have the highest total number of dislikes. Music videos have the second-most total dislikes, followed by How-to & Style. This ties to the number of videos posted in each of these genres.
+
+## Now let's investigate which genres have the most average dislikes per view.
+```{r}
+ggplot(us.data,aes(x=genre,y=dislikes/views)) + geom_bar(aes(fill=genre),stat="identity") + 
+  labs(y="Dislikes/Views",title ="Average Dislikes per View by Genre")+ theme(axis.text=element_text(size=6),legend.position = "none")
+```
+
+## Again, it's the dominant Entertainment genre, but this time followed by News & Politics.
+
+## Comment_count by genre is also interesting:
+```{r}
+ggplot(us.data,aes(x=genre,y=log(comment_count))) + geom_bar(aes(fill=genre),stat="identity") + 
+  labs(y="Log Comment Count",title ="Log Comment Count by Genre")+ theme(axis.text=element_text(size=6),legend.position = "none")
+```
+
+## Entertainment genre videos generate more total comments than any other genre.
+
+## Let's evaluate comments per view by genre to see if it's the same story.
+```{r}
+ggplot(us.data,aes(x=genre,y=comment_count/views)) + geom_bar(aes(fill=genre),stat="identity") + 
+  labs(y="Comment_Count/Views",title ="Average Comments per View by Genre")+ theme(axis.text=element_text(size=6),legend.position = "none")
+```
+
+## The most popular genre, Entertainment, also generates the most comments per video view.
+
+## Since there is a sizable difference in the amount of video content available by genre, we should also look at mean values by genre.
+
+## We look at mean values for four of the key variables:
+```{r}
+ag.1=aggregate(us.data[,8:11],list(Genre=us.data$genre),mean)
+str(ag.1)
+summary(ag.1)
+```
+
+## First we start with mean views. The sheer number of entertainment videos pull the average down. It's also possible that "Entertainment" is a catch-all term for a broad category.
+```{r}
+ggplot(ag.1,aes(x=Genre,y=views)) + geom_bar(aes(fill=Genre),stat="identity") + 
+  labs(y="Mean Views",title ="Mean Views by Genre")+ theme(axis.text=element_text(size=6),legend.position = "none")
+```
+
+## Videos in the Music genre have the highest mean views, followed by Film & Animation.
+
+## Next we look at mean likes.
+```{r}
+ggplot(ag.1,aes(x=Genre,y=likes)) + geom_bar(aes(fill=Genre),stat="identity") + 
+  labs(y="Mean Likes",title ="Mean Likes by Genre")+ theme(axis.text=element_text(size=6),legend.position = "none")
+```
+
+## Videos in the Nonprofits & Activism genre have the highest mean likes, followed closely by Music.
+
+## Now, mean dislikes.
+```{r}
+ggplot(ag.1,aes(x=Genre,y=dislikes)) + geom_bar(aes(fill=Genre),stat="identity") + 
+  labs(y="Total Dislikes",title ="Mean Dislikes by Genre")+ theme(axis.text=element_text(size=6),legend.position = "none")
+```
+
+## Videos in the Nonprofits & Activism genre also have the highest mean dislikes. No other genre is close.
+
+## How about mean comment counts per video?
+```{r}
+ggplot(ag.1,aes(x=Genre,y=comment_count)) + geom_bar(aes(fill=Genre),stat="identity") + 
+  labs(y="Total Comment Count",title ="Mean Comment Count by Genre")+ theme(axis.text=element_text(size=6),legend.position = "none")
+```
+
+## Videos in the Nonprofits & Activism genre also have the highest mean number of comments, followed by music and gaming. 
+## It seems logical to assume that viewers are more willing to comment on content that they feel passtionate about.
+
+## Last, we look at the ratio of likes to dislikes by genre:
+```{r}
+ggplot(ag.1,aes(x=Genre,y=likes/dislikes)) + geom_bar(aes(fill=Genre),stat="identity") + 
+  labs(y="Ratio of Likes to Dislikes",title ="Ratio of Likes to Dislikes by Genre")+ 
+  theme(axis.text=element_text(size=6),legend.position ="none")
+```
+
+## This plot shows that videos in the Shows genre have the highest like ratio, followed by Pets & Animals and Education. It may be difficult to dislike videos about more sentimental or educational topics.
+
+## Now we will check correlations between variables, using log scale where it makes sense.
+library(corrplot)
+
+## First we evaluate likes against views and label accordingly.
+```{r}
+par(mfrow=c(2,2))
+plot(us.data$likes,us.data$views,col="dark blue",xlab="Raw Number of Likes",ylab="Raw Number of Views",main="Raw Views Against Raw Likes")
+plot(log(us.data$likes),us.data$views,col="dark blue", xlab="Log Number of Likes",ylab="Raw Number of Views",main="Raw Views Against Log Likes")
+plot(us.data$likes,log(us.data$views),col="dark blue", xlab="Raw Number of Likes",ylab="Log Number of Views",main="Log Views Against Raw Likes")
+plot(log(us.data$likes),log(us.data$views),col="dark blue", xlab="Log Number of Likes",ylab="Log Number of Views",main="Log Views Against Log Likes")
+par(mfrow=c(1,1))
+```
+
+## Next we evaluate dislikes against views and again label accordingly.
+```{r}
+par(mfrow=c(2,2))
+plot(us.data$dislikes,us.data$views,col="dark green",xlab="Raw Number of Dislikes",ylab="Raw Number of Views",main="Raw Views Against Raw Dislikes")
+plot(log(us.data$dislikes),us.data$views,col="dark green",xlab="Log Number of Dislikes",ylab="Raw Number of Views",main="Raw Views Against Log Dislikes")
+plot(us.data$dislikes,log(us.data$views),col="dark green",xlab="Raw Number of Likes",ylab="Log Number of Views",main="Log Views Against Raw Dislikes")
+plot(log(us.data$dislikes),log(us.data$views),col="dark green",xlab="Log Number of Likes",ylab="Log Number of Views",main="Log Views Against Log Dislikes")
+par(mfrow=c(1,1))
+```
+
+## Now comment_count against views with correspoding labels.
+```{r}
+par(mfrow=c(2,2))
+plot(us.data$comment_count,us.data$views,col="dark orange",xlab="Raw Comment Count",ylab="Raw Number of Views",main="Raw Views Against Raw Comment Count")
+plot(log(us.data$comment_count),us.data$views,col="dark orange",xlab="Log Comment Count",ylab="Raw Number of Views",main="Raw Views Against Log Comment Count")
+plot(us.data$comment_count,log(us.data$views),col="dark orange",xlab="Raw Comment Count",ylab="Log Number of Views",main="Log Views Against Raw Comment Count")
+plot(log(us.data$comment_count),log(us.data$views),col="dark orange",xlab="Log Comment Count",ylab="Log Number of Views",main="Log Views Against Log Comment Count")
+par(mfrow=c(1,1))
+```
+
+## Note that for all three of the above plots, applying the log of both the x and y variables appears to produce the best result. This represents a % change in the X variable vs. views (Y).
+
+## Now views against trending date:
+```{r}
+plot(us.data$trending_date,us.data$views, xlab="Trending Date",ylab="Raw Number of Views",main="Raw Views Against Trending Date")
+```
+
+## Then views against trending day of the week:
+```{r}
+plot(us.data$trending_weekday,(us.data$views), xlab="Trending Day of the Week",ylab="Raw Number of Views",main="Raw Views Against Trending Day of the Week")
+```
+
+## Followed by views against publish date and publish day of the week:
+```{r}
+par(mfrow=c(2,1))
+plot(us.data$publish_date,us.data$views,xlab="Publish Date",ylab="Raw Number of Views",main="Raw Views Against Publish Date")
+plot(us.data$publish_date_weekday,us.data$views,xlab="Publish Day of the Week",ylab="Log Number of Views",main="Raw Views Against Publish Day of the Week")
+par(mfrow=c(1,1))
+```
+
+# **PART 2: QUANTITATIVE DATA ASSESSMENT & REGRESSION**
+
+# **PART 2A: Correlation assessment**
+
+## We now remove variables and observations from the data set where either redundant or of lower explanatory power.
+
+## Remove observations where videos had technical issues or where comments were disabled.
+```{r}
+us.data.filter=subset(us.data,comments_disabled==FALSE & video_error_or_removed==FALSE)
+str(us.data.filter)
+```
+
+## Total observations decrease from 40,949 to 40,293.
+
+## We next plan to review correlations but first must remove non-numeric values.
+```{r}
+us.data.cor=us.data[,c(1,8:11,21:24)]
+str(us.data.cor)
+```
+
+## Variable correlation
+```{r}
+library(corrplot)
+us.data.cor=as.matrix(us.data.cor)
+cor1=cor(us.data.cor)
+corrplot(cor1,type="lower",method="number")
+```
+
+## Not surprising, views and likes are highly correlated (0.85). It makes sense to recommend video content with a large numer of likes.
+## Likes and comment_count are also highly correlated (0.8), but so are dislikes and comment_count (0.7).
+
+# **PART 2B: Linear Regression**
+
+## We start our regression analysis by analyzing the predictive power of three key variables: likes, dislikes, and comment_count.
+```{r}
+model1=lm(views~likes+dislikes+comment_count,data=us.data.filter)
+summary(model1)
+```
+
+## Adjusted R2 is .792 with only three variables. Very high.
+
+## Surprisingly, comment_count has a negative coefficient, implying that more comments results in fewer views. 
+## This seems odd, as comments would likely indicate content that viewers feel passionate about and would likely drive higher views.
+## One possible explanation is that comments may be left repeatedly (as in a public conversation thread) by people who only view the video once. 
+## Since YouTube generates ad revenue from video views, anything which discourages views must be controlled for.
+
+## What if we only look at likes which had a t-statistic of 279.30?
+```{r}
+model2=lm(views~likes,data=us.data.filter)
+summary(model2)
+```
+
+## Adjusted R2 when looking only at likes is .7295. Again, very high, especially for a single variable.
+
+## Next, we conduct regression analysis on a broader data set, removing variables which have low or redundant explanatory power.
+```{r}
+us.data.1=us.data.filter[,c(8:11,17,18,20:24)]
+model3=lm(views~.,data=us.data.1)
+summary(model3)
+us.data.1=as.data.frame(us.data.1)
+str(us.data.1)
+summary(us.data.1)
+```
+
+## We double-check for collinearity.
+```{r}
+library(car)
+vif(model3)
+```
+
+## The highest VIF value is comment_count at 4.9367. There is moderate correlation but probably not enough to have to remove the variable due to collinearity.
+
+## We also quickly check views against comment_count only.
+```{r}
+model4=lm(views~comment_count,data=us.data.filter)
+summary(model4)
+vif(model3)
+```
+
+## We try removing the comment_count variable since its negative coefficient does not seem logical.
+```{r}
+us.data.2=us.data.1[,-4]
+model5=lm(views~.,data=us.data.2)
+summary(model5)
+```
+
+# **PART 3: BEST MODEL ASSESSMENT**
+
+# **PART 3A: Including the comment_count variable.**
+
+## Next we'll see if it's possible to improve the simple linear model by comparing the results of best subset selection, forward selection, and backward selection.
+## In doing this, we seek to improve the robustness of our analysis.
+
+## We first look at subset selection as a means to identify a subset of the predictor variables best related to the response. 
+## This includes fitting a separate least squares regression for each possible combination of predictors, then reviewing the resulting models to identify the one that is best.
+```{r}
+library(leaps)
+```
+
+## We begin by looking at subsets of the linear regression data set.
+```{r}
+str(us.data.1)
+dim(us.data.1)
+```
+
+## Dimensions are 40293 by 11.
+```{r}
+regfit.full.yt=regsubsets(views~.,us.data.1)
+summary(regfit.full.yt)
+regfit.full.yt=regsubsets(views~.,data=us.data.1,nvmax=10)
+summary(regfit.full.yt)
+reg.summary=summary(regfit.full.yt)
+names(reg.summary)
+```
+
+## We check the cumulative progression of R2 values against the variables.
+```{r}
+reg.summary$rsq
+```
+
+## The results show that R2 increases from 0.7295 to 0.7963 when we include all variables.
+
+## Next we look at how well the number of variables explains RSS and Adjusted R2 scores.
+```{r}
+par(mfrow=c(2,1))
+plot(reg.summary$rss,xlab="Number of Variables",ylab="RSS",main="Reductions in RSS by Number of Variables",type="l")
+plot(reg.summary$adjr2,xlab="Number of Variables",ylab="Adjusted RSq",main="Increases to Adjusted R Squared by Number of Variables",type="l") 
+par(mfrow=c(1,1))
+```
+
+## Reviewing the plots, it seems that we probably only need about 3 variables to account for most of the prediction value.
+
+## We now identify the number of explanatory variables required to maximize adjusted R2.
+```{r}
+par(mfrow=c(1,1))
+plot(reg.summary$adjr2,xlab="Number of Variables",ylab="Adjusted RSq",main="Number of Explanatory Variables Required to Maximize Adjusted R2",type="l")
+which.max(reg.summary$adjr2)
+points(11,reg.summary$adjr2[11], col="red",cex=2,pch=2)
+```
+
+## The model with the largest adjusted R2 utilizes 11 independent variables.
+
+## Next, identify the model with the number of variables that minimizes AIC.
+```{r}
+plot(reg.summary$cp,xlab="Number of Variables",ylab="Cp",main="Number of Variables that Minimizes AIC",type='l')
+which.min(reg.summary$cp)
+points(11,reg.summary$cp[11],col="red",cex=2,pch=2)
+```
+
+## And now BIC.
+```{r}
+which.min(reg.summary$bic)
+plot(reg.summary$bic,xlab="Number of Variables",ylab="BIC",main="Number of Variables that Minimizes BIC",type='l')
+points(11,reg.summary$bic[11],col="red",cex=2,pch=2)
+```
+
+## The model with 11 independent variables minimizes AIC and BIC.
+
+## Next we confirm the coefficients for each of the best models according to their respective measurements.
+
+## Maximum R2
+```{r}
+coef(regfit.full.yt,11)
+```
+
+## Maximum Adjusted R2
+```{r}
+coef(regfit.full.yt,11)
+```
+
+## Minimum AIC
+```{r}
+coef(regfit.full.yt,11)
+```
+
+## Minimum BIC
+```{r}
+coef(regfit.full.yt,11)
+```
+
+## We next use stepwise selection to identify models which may help to avoid overfitting.
+## The larger the search space, the higher the chance of finding models that look good on the training data, even though they might not have any predictive power on future data.
+## Thus an enormous search space can lead to overfitting and high variance of the coefficient estimates. We seek to avoid this potential overfitting.
+
+## We start with Forward Stepwise Selection.
+
+## With Forward Stepwise Selectin, we start at 0 and then add variables individually based on the biggest R squared.
+```{r}
+regfit.fwd.yt=regsubsets(views~.,data=us.data.1,nvmax=10,method="forward") 
+summary(regfit.fwd.yt)
+```
+
+## The best one-variable model only includes "likes", the best two-variable model also includes "comment_count", and the best three-variable model additionally includes "dislikes."
+
+## Next, we look at Backward Stepwise Selection.
+```{r}
+regfit.bwd.yt=regsubsets(views~.,data=us.data.1,nvmax=10,method="backward")
+summary(regfit.bwd.yt)
+```
+
+## All of the 11 variables are the same using the different approaches.
+```{r}
+coef(regfit.full.yt,11)
+coef(regfit.fwd.yt,11)
+coef(regfit.bwd.yt,11)
+```
+
+## Last, we use a validation set approach, splitting the observations into training and testing, to develop a model.
+```{r}
+set.seed(11)
+train=sample(c(TRUE,FALSE), nrow(us.data.1),rep=TRUE)
+test=(!train)
+regfit.best=regsubsets(views~.,data=us.data.1[train,],nvmax=10)
+test.mat=model.matrix(views~.,data=us.data.1[test,])
+val.errors=rep(NA,10)
+for(i in 1:10){ 
+  coefi=coef(regfit.best,id=i)
+  pred=test.mat[,names(coefi)]%*%coefi
+  val.errors[i]=mean((us.data.1$views[test]-pred)^2)
+}
+val.errors
+which.min(val.errors)
+coef(regfit.best,7)
+```
+
+## The best model contains 7 variables.
+
+## We now try to choose among the models of different sizes using cross-validation. 
+
+## To make this easier next time, we create a "predict" method following the prior steps. There is no predict method for regsubsets.
+```{r}
+predict.regsubsets=function(object,newdata,id,...){
+  form=as.formula (object$call [[2]])
+  mat=model.matrix (form,newdata )
+  coefi=coef(object,id=id)
+  xvars=names(coefi)
+  mat[,xvars ]%*% coefi
+}
+```
+## First, we create a vector that allocates each observation to one of k = 10 folds, and we create a matrix in which we will store the results.
+```{r}
+k=10
+set.seed (5)
+folds=sample(1:k,nrow(us.data.1),replace=TRUE)
+cv.errors=matrix(NA,k,10,dimnames=list(NULL,paste(1:10)))
+
+for(j in 1:k){
+  best.fit=regsubsets(views~.,data=us.data.1 [folds !=j,],nvmax =10)
+  for(i in 1:10) {
+    pred=predict(best.fit,us.data.1[folds ==j,],id=i)
+    cv.errors[j,i]=mean((us.data.1$views[folds ==j]-pred)^2)
+  }
+}
+
+mean.cv.errors=apply(cv.errors,2,mean)
+mean.cv.errors
+par(mfrow=c(1,1))
+plot(mean.cv.errors,type='b')
+```
+
+## Reviewing the mean cross-validation error results, the cross-validation approach selects a 6-variable model.
+## As the last step, we perform best subset selection on the full data set to confirm the 6-variable model.
+```{r}
+reg.best=regsubsets(views~.,data=us.data.1,nvmax=10)
+coef(reg.best,6)
+```
+
+## Now we try a hypothetical example based on this model with 1,000 likes, 500 dislikes, 30 comments, in the Music genre, trending on a Tuesday.
+```{r}
+hypothetical.views=(1.112291e+05)+((3.560300e+01)*1000)+((8.304395e+01)*500)+((-9.748289e+01)*30)
+```
+## Hypothetical views are 185,430.
+
+# **PART 3B: Excluding the comment_count variable since it's likely that it gained a negative coefficient due to collinearity.**
+```{r}
+str(us.data.2)
+dim(us.data.2)
+```
+
+## Dimensions are 40293 by 10.
+```{r}
+regfit.full.yt1=regsubsets(views~.,us.data.2)
+summary(regfit.full.yt1)
+regfit.full.yt1=regsubsets(views~.,data=us.data.2,nvmax=9)
+summary(regfit.full.yt1)
+reg.summary1=summary(regfit.full.yt1)
+names(reg.summary1)
+```
+
+## We check the cumulative progression of R2 values against the variables.
+```{r}
+reg.summary1$rsq
+```
+
+## The results show that R^2 increases from 0.7295 to 0.7441 when we include all variables.
+
+## Next we look at how well the number of variables explains RSS and Adjusted R2 scores.
+```{r}
+par(mfrow=c(2,1))
+plot(reg.summary1$rss,xlab="Number of Variables",ylab="RSS",main="Reductions in RSS by Number of Variables",type="l")
+plot(reg.summary1$adjr2,xlab="Number of Variables",ylab="Adjusted RSq",main="Increases to Adjusted R Squared by Number of Variables",type="l") 
+par(mfrow=c(1,1))
+```
+
+## Reviewing the plots, this time it seems that we probably only need about 6-7 variables to account for most of the prediction value.
+
+## We now identify the number of explanatory variables required to maximize adjusted R2.
+```{r}
+par(mfrow=c(1,1))
+plot(reg.summary1$adjr2,xlab="Number of Variables",ylab="Adjusted RSq",main="Number of Explanatory Variables Required to Maximize Adjusted R2",type="l")
+which.max(reg.summary1$adjr2)
+points(10,reg.summary1$adjr2[10], col="red",cex=2,pch=2)
+```
+
+## The model with the largest adjusted R2 utilizes 10 independent variables.
+
+## Next, we identify the model with the number of variables that minimizes AIC. Note that Cp is AIC.
+```{r}
+plot(reg.summary1$cp,xlab="Number of Variables",ylab="Cp",main="Number of Variables that Minimizes AIC",type='l')
+which.min(reg.summary1$cp)
+points(10,reg.summary1$cp[10],col="red",cex=2,pch=2)
+```
+
+## And now BIC.
+```{r}
+which.min(reg.summary1$bic)
+plot(reg.summary1$bic,xlab="Number of Variables",ylab="BIC",main="Number of Variables that Minimizes BIC",type='l')
+points(10,reg.summary1$bic[10],col="red",cex=2,pch=2)
+```
+
+## Again, even withough the comment_count variable, the model with 10 independent variables minimizes AIC and BIC.
+
+## Next we confirm the coefficients for each of the best models according to their respective measurements.
+
+## Maximum R2
+```{r}
+coef(regfit.full.yt1,10)
+```
+
+## Maximum Adjusted R2
+```{r}
+coef(regfit.full.yt1,10)
+```
+
+## Minimum AIC
+```{r}
+coef(regfit.full.yt1,10)
+```
+
+## Minimum BIC
+```{r}
+coef(regfit.full.yt1,10)
+```
+
+## We once again use stepwise selection to identify models which may help to avoid overfitting.
+
+## We start with Forward Stepwise Selection.
+```{r}
+regfit.fwd.yt1=regsubsets(views~.,data=us.data.2,nvmax=9,method="forward")
+summary(regfit.fwd.yt1)
+```
+
+## The best one-variable model only includes "likes", the best two-variable model also includes dislikes, and the best three-variable model additionally includes the Nonprofits & Activism genre.
+
+## Next, we look at Backward Stepwise Selection.
+```{r}
+regfit.bwd.yt1=regsubsets(views~.,data=us.data.2,nvmax=9,method="backward") 
+summary(regfit.bwd.yt1)
+```
+
+## All of the 10 variables are the same using the different approaches.
+```{r}
+coef(regfit.full.yt1,10)
+coef(regfit.fwd.yt1,10)
+coef(regfit.bwd.yt1,10)
+```
+
+## Last, we use a validation set approach, splitting the observations into training and testing, to develop a model.
+```{r}
+set.seed(11)
+train=sample(c(TRUE,FALSE), nrow(us.data.2),rep=TRUE)
+test=(!train)
+regfit.best1=regsubsets(views~.,data=us.data.2[train,],nvmax=9)
+test.mat=model.matrix(views~.,data=us.data.2[test,])
+val.errors=rep(NA,9)
+for(i in 1:9){
+  coefi=coef(regfit.best1,id=i)
+  pred=test.mat[,names(coefi)]%*%coefi
+  val.errors[i]=mean((us.data.2$views[test]-pred)^2)
+}
+val.errors
+which.min(val.errors)
+coef(regfit.best1,9)
+```
+
+## The best model contains 9 variables.
+
+## We now try to choose among the models of different sizes using cross-validation. 
+
+## To make this easier next time, we create a "predict" method following the prior steps. There is no predict method for regsubsets.
+```{r}
+predict.regsubsets1=function(object,newdata,id,...){
+  form=as.formula (object$call [[2]])
+  mat=model.matrix (form,newdata )
+  coefi=coef(object,id=id)
+  xvars=names(coefi)
+  mat[,xvars ]%*% coefi
+}
+```
+## We next create a vector that allocates each observation to one of k = 10 folds, and we create a matrix in which we will store the results.
+```{r}
+k=10
+set.seed (5)
+folds1=sample(1:k,nrow(us.data.2),replace=TRUE)
+cv.errors1=matrix(NA,k,9,dimnames=list(NULL,paste(1:9)))
+
+for(j in 1:k){
+  best.fit1=regsubsets(views~.,data=us.data.2 [folds1!=j,],nvmax =9)
+  for(i in 1:9) {
+    pred=predict(best.fit1,us.data.2[folds1==j,],id=i)
+    cv.errors1[j,i]=mean((us.data.2$views[folds ==j]-pred)^2)
+  }
+}
+
+mean.cv.errors.1=apply(cv.errors1,2,mean)
+mean.cv.errors.1
+par(mfrow=c(1,1))
+plot(mean.cv.errors.1,type='b')
+```
+
+## Reviewing the mean cross-validation error results, the cross-validation approach selects a 3-variable model.
+## As the last step, we perform best subset selection on the full data set to confirm the 3-variable model.
+```{r}
+reg.best1=regsubsets(views~.,data=us.data.2,nvmax=9)
+coef(reg.best1,3)
+```
+
+## Now we try the same hypothetical example as before based again on a model with 1,000 likes, 500 dislikes, 30 comments, in the Music genre, trending on a Tuesday.
+```{r}
+hypothetical.views.3b=(319092.17332)+((25.78769)*1000)+((29.36622)*500)
+```
+## Hypothetical views for the model which excludes comment_count are 311,308. This compares to 185,430 in the model which includes comment_count.
